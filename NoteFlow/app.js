@@ -19,6 +19,7 @@
     // Initialize Firebase
     firebase.initializeApp(firebaseConfig);
     const auth = firebase.auth();
+    const db = firebase.firestore();
     const googleProvider = new firebase.auth.GoogleAuthProvider();
 
     // ===== STATE =====
@@ -27,6 +28,8 @@
     let goals = [];
     let currentPage = 'home';
     let timerInterval = null;
+    let unsubNotes = null;
+    let unsubGoals = null;
 
     // ===== DOM REFERENCES =====
     const $ = (sel) => document.querySelector(sel);
@@ -139,7 +142,7 @@
         if (user) {
             currentUser = user;
             showApp();
-            loadState();
+            subscribeToData();
             loadBgSetting();
             initApp();
         } else {
@@ -347,29 +350,49 @@
     }
 
     // ============================================================
-    // LOCAL STORAGE (per-user)
+    // FIRESTORE DATA LAYER
     // ============================================================
-    function getStorageKey(type) {
-        if (!currentUser) return `noteflow_${type}`;
-        return `noteflow_${currentUser.uid}_${type}`;
+    function getUserCollection(collectionName) {
+        if (!currentUser) return null;
+        return db.collection('users').doc(currentUser.uid).collection(collectionName);
     }
 
-    function saveState() {
-        localStorage.setItem(getStorageKey('notes'), JSON.stringify(notes));
-        localStorage.setItem(getStorageKey('goals'), JSON.stringify(goals));
+    function subscribeToData() {
+        if (!currentUser) return;
+
+        // Unsubscribe existing listeners
+        if (unsubNotes) unsubNotes();
+        if (unsubGoals) unsubGoals();
+
+        // Real-time listener for Notes
+        unsubNotes = getUserCollection('notes')
+            .orderBy('createdAt', 'desc')
+            .onSnapshot((snapshot) => {
+                notes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderNotes();
+                renderHome();
+            }, (error) => {
+                console.error('Notes listener error:', error);
+                showToast('Failed to load notes', 'error');
+            });
+
+        // Real-time listener for Goals
+        unsubGoals = getUserCollection('goals')
+            .orderBy('createdAt', 'desc')
+            .onSnapshot((snapshot) => {
+                goals = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderGoals();
+                renderSidebar();
+                renderHome();
+            }, (error) => {
+                console.error('Goals listener error:', error);
+                showToast('Failed to load goals', 'error');
+            });
     }
 
-    function loadState() {
-        try {
-            const savedNotes = localStorage.getItem(getStorageKey('notes'));
-            const savedGoals = localStorage.getItem(getStorageKey('goals'));
-            notes = savedNotes ? JSON.parse(savedNotes) : [];
-            goals = savedGoals ? JSON.parse(savedGoals) : [];
-        } catch (e) {
-            console.error('Failed to load state:', e);
-            notes = [];
-            goals = [];
-        }
+    function unsubscribeFromData() {
+        if (unsubNotes) { unsubNotes(); unsubNotes = null; }
+        if (unsubGoals) { unsubGoals(); unsubGoals = null; }
     }
 
     // ============================================================
@@ -748,67 +771,72 @@
     }
 
     // ============================================================
-    // CRUD: NOTES
+    // CRUD: NOTES (Firestore)
     // ============================================================
-    function addNote(title, content, date) {
-        notes.push({ id: generateId(), title, content, date, createdAt: Date.now() });
-        saveState();
-        renderNotes();
-        renderSidebar();
-        renderHome();
-        showToast('Note added successfully!', 'success');
+    async function addNote(title, content, date) {
+        try {
+            await getUserCollection('notes').add({
+                title, content, date, createdAt: Date.now()
+            });
+            showToast('Note added successfully!', 'success');
+        } catch (error) {
+            console.error('Error adding note:', error);
+            showToast('Failed to add note', 'error');
+        }
     }
 
-    function deleteNote(id) {
+    async function deleteNote(id) {
         const card = document.querySelector(`[data-note-id="${id}"]`);
-        if (card) {
-            card.style.animation = 'cardRemove 0.35s ease forwards';
-            setTimeout(() => {
-                notes = notes.filter(n => n.id !== id);
-                saveState(); renderNotes(); renderHome();
-            }, 350);
-        } else {
-            notes = notes.filter(n => n.id !== id);
-            saveState(); renderNotes(); renderHome();
+        if (card) card.style.animation = 'cardRemove 0.35s ease forwards';
+
+        try {
+            await getUserCollection('notes').doc(id).delete();
+            showToast('Note deleted', 'info');
+        } catch (error) {
+            console.error('Error deleting note:', error);
+            showToast('Failed to delete note', 'error');
         }
-        showToast('Note deleted', 'info');
     }
 
     // ============================================================
-    // CRUD: GOALS
+    // CRUD: GOALS (Firestore)
     // ============================================================
-    function addGoal(title, description, deadline) {
-        goals.push({ id: generateId(), title, description, deadline, completed: false, createdAt: Date.now(), completedAt: null });
-        saveState();
-        renderGoals();
-        renderSidebar();
-        renderHome();
-        showToast('Goal created! Stay focused 💪', 'success');
+    async function addGoal(title, description, deadline) {
+        try {
+            await getUserCollection('goals').add({
+                title, description, deadline,
+                completed: false, createdAt: Date.now(), completedAt: null
+            });
+            showToast('Goal created! Stay focused 💪', 'success');
+        } catch (error) {
+            console.error('Error adding goal:', error);
+            showToast('Failed to add goal', 'error');
+        }
     }
 
-    function completeGoal(id) {
-        const goal = goals.find(g => g.id === id);
-        if (goal) {
-            goal.completed = true;
-            goal.completedAt = Date.now();
-            saveState(); renderGoals(); renderSidebar(); renderHome();
+    async function completeGoal(id) {
+        try {
+            await getUserCollection('goals').doc(id).update({
+                completed: true, completedAt: Date.now()
+            });
             showToast('Goal completed! 🎉', 'success');
+        } catch (error) {
+            console.error('Error completing goal:', error);
+            showToast('Failed to complete goal', 'error');
         }
     }
 
-    function deleteGoal(id) {
+    async function deleteGoal(id) {
         const card = document.querySelector(`[data-goal-id="${id}"]`);
-        if (card) {
-            card.style.animation = 'cardRemove 0.35s ease forwards';
-            setTimeout(() => {
-                goals = goals.filter(g => g.id !== id);
-                saveState(); renderGoals(); renderSidebar(); renderHome();
-            }, 350);
-        } else {
-            goals = goals.filter(g => g.id !== id);
-            saveState(); renderGoals(); renderSidebar(); renderHome();
+        if (card) card.style.animation = 'cardRemove 0.35s ease forwards';
+
+        try {
+            await getUserCollection('goals').doc(id).delete();
+            showToast('Goal removed', 'info');
+        } catch (error) {
+            console.error('Error deleting goal:', error);
+            showToast('Failed to delete goal', 'error');
         }
-        showToast('Goal removed', 'info');
     }
 
     // ===== EXPOSE PUBLIC API =====
@@ -842,6 +870,7 @@
             clearInterval(timerInterval);
             timerInterval = null;
         }
+        unsubscribeFromData();
         notes = [];
         goals = [];
     }
@@ -1049,22 +1078,41 @@
         closeBgModal();
     }
 
-    function saveBgSetting(value, type) {
+    async function saveBgSetting(value, type) {
         if (!currentUser) return;
-        const key = `noteflow_${currentUser.uid}_bg`;
-        // For images, store the data URL (may be large but localStorage supports ~5MB)
         try {
-            localStorage.setItem(key, JSON.stringify({ value, type }));
+            if (type === 'image') {
+                // Images are too large for Firestore (1MB limit) — keep in localStorage
+                const key = `noteflow_${currentUser.uid}_bg`;
+                localStorage.setItem(key, JSON.stringify({ value, type }));
+            } else {
+                // Gradients are small — save to Firestore for cross-device sync
+                await db.collection('users').doc(currentUser.uid)
+                    .collection('settings').doc('background')
+                    .set({ value, type });
+                // Also cache locally
+                const key = `noteflow_${currentUser.uid}_bg`;
+                localStorage.setItem(key, JSON.stringify({ value, type }));
+            }
         } catch (e) {
-            console.warn('Could not save background to localStorage:', e);
-            showToast('Background too large to save. It will reset on reload.', 'error');
+            console.warn('Could not save background:', e);
+            showToast('Failed to save background setting', 'error');
         }
     }
 
-    function loadBgSetting() {
+    async function loadBgSetting() {
         if (!currentUser) return;
-        const key = `noteflow_${currentUser.uid}_bg`;
         try {
+            // Try Firestore first (for gradients synced across devices)
+            const doc = await db.collection('users').doc(currentUser.uid)
+                .collection('settings').doc('background').get();
+            if (doc.exists) {
+                const { value, type } = doc.data();
+                applyBackground(value, type);
+                return;
+            }
+            // Fallback to localStorage (for images)
+            const key = `noteflow_${currentUser.uid}_bg`;
             const data = localStorage.getItem(key);
             if (data) {
                 const { value, type } = JSON.parse(data);
@@ -1075,10 +1123,16 @@
         }
     }
 
-    function removeBgSetting() {
+    async function removeBgSetting() {
         if (!currentUser) return;
-        const key = `noteflow_${currentUser.uid}_bg`;
-        localStorage.removeItem(key);
+        try {
+            await db.collection('users').doc(currentUser.uid)
+                .collection('settings').doc('background').delete();
+            const key = `noteflow_${currentUser.uid}_bg`;
+            localStorage.removeItem(key);
+        } catch (e) {
+            console.warn('Could not remove background setting:', e);
+        }
     }
 
     function updatePresetActiveState(activeBtn) {
@@ -1090,13 +1144,13 @@
         DOM.bgPresetsGrid.querySelectorAll('.bg-preset').forEach(b => b.classList.remove('active'));
     }
 
-    function syncPresetActiveState() {
+    async function syncPresetActiveState() {
         if (!currentUser) return;
-        const key = `noteflow_${currentUser.uid}_bg`;
         try {
-            const data = localStorage.getItem(key);
-            if (data) {
-                const { value, type } = JSON.parse(data);
+            const doc = await db.collection('users').doc(currentUser.uid)
+                .collection('settings').doc('background').get();
+            if (doc.exists) {
+                const { value, type } = doc.data();
                 if (type === 'gradient') {
                     DOM.bgPresetsGrid.querySelectorAll('.bg-preset').forEach(b => {
                         b.classList.toggle('active', b.dataset.bg === value);
