@@ -320,9 +320,12 @@
     // --- Sign Out ---
     async function handleSignOut() {
         try {
+            DOM.userDropdown.classList.remove('open');
+            unsubscribeFromData();
             await auth.signOut();
             showToast('Signed out successfully', 'info');
         } catch (error) {
+            console.error('Sign out error:', error);
             showToast('Failed to sign out', 'error');
         }
     }
@@ -980,6 +983,7 @@
                 saveBgSetting(bg, 'gradient');
                 updatePresetActiveState(btn);
                 showToast('Background updated!', 'success');
+                closeBgModal();
             });
         });
 
@@ -1061,7 +1065,7 @@
         const mainEl = DOM.mainEl;
         mainEl.classList.add('has-custom-bg');
 
-        const bgValue = type === 'image' ? `url(${value})` : value;
+        const bgValue = type === 'image' ? `url("${value}")` : value;
         styleEl.textContent = `
             .main.has-custom-bg::before {
                 background-image: ${bgValue} !important;
