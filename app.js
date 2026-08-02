@@ -26,10 +26,12 @@
     let currentUser = null;
     let notes = [];
     let goals = [];
+    let dailyTasks = [];
     let currentPage = 'home';
     let timerInterval = null;
     let unsubNotes = null;
     let unsubGoals = null;
+    let unsubDailyTasks = null;
     let searchQuery = '';
     let selectedCategoryFilter = 'All';
 
@@ -133,6 +135,15 @@
         goalDeadline: $('#goal-deadline'),
         goalsContainer: $('#goals-container'),
 
+        // Daily Tasks
+        taskForm: $('#task-form'),
+        taskText: $('#task-text'),
+        taskProgressPct: $('#task-progress-pct'),
+        taskProgressBar: $('#task-progress-bar'),
+        tasksContainer: $('#tasks-container'),
+        homeTasksList: $('#home-tasks-list'),
+        homeTasksEmpty: $('#home-tasks-empty'),
+
         // Background Modal
         bgSettingsBtn: $('#bg-settings-btn'),
         bgModalOverlay: $('#bg-modal-overlay'),
@@ -142,9 +153,65 @@
         bgPresetsGrid: $('#bg-presets-grid'),
         bgResetBtn: $('#bg-reset-btn'),
 
+        // Profile Photo
+        changeProfilePicBtn: $('#change-profile-pic-btn'),
+        profilePicInput: $('#profile-pic-input'),
+
+        // Google Password Modal
+        googlePasswordModalOverlay: $('#google-password-modal-overlay'),
+        googlePasswordForm: $('#google-password-form'),
+        googleSetPassword: $('#google-set-password'),
+        googleConfirmPassword: $('#google-confirm-password'),
+        googlePasswordSkipBtn: $('#google-password-skip-btn'),
+
+        // Security & Auth Modals
+        forgotPasswordLink: $('#forgot-password-link'),
+        resetPasswordModalOverlay: $('#reset-password-modal-overlay'),
+        resetPasswordModalClose: $('#reset-password-modal-close'),
+        resetPasswordForm: $('#reset-password-form'),
+        resetEmail: $('#reset-email'),
+        resetPasswordCancelBtn: $('#reset-password-cancel-btn'),
+
+        changePasswordBtn: $('#change-password-btn'),
+        changePasswordModalOverlay: $('#change-password-modal-overlay'),
+        changePasswordModalClose: $('#change-password-modal-close'),
+        changePasswordForm: $('#change-password-form'),
+        cpOldPassword: $('#cp-old-password'),
+        cpNewPassword: $('#cp-new-password'),
+        cpConfirmPassword: $('#cp-confirm-password'),
+        changePasswordCancelBtn: $('#change-password-cancel-btn'),
+
+        pinLockSettingsBtn: $('#pin-lock-settings-btn'),
+        lockAppNowBtn: $('#lock-app-now-btn'),
+        pinSettingsModalOverlay: $('#pin-settings-modal-overlay'),
+        pinSettingsModalClose: $('#pin-settings-modal-close'),
+        pinSettingsForm: $('#pin-settings-form'),
+        pinEnableToggle: $('#pin-enable-toggle'),
+        pinNew: $('#pin-new'),
+        pinConfirm: $('#pin-confirm'),
+        pinSettingsCancelBtn: $('#pin-settings-cancel-btn'),
+
+        deleteAccountBtn: $('#delete-account-btn'),
+        deleteAccountModalOverlay: $('#delete-account-modal-overlay'),
+        deleteAccountModalClose: $('#delete-account-modal-close'),
+        deleteAccountForm: $('#delete-account-form'),
+        deleteConfirmText: $('#delete-confirm-text'),
+        deletePassword: $('#delete-password'),
+        deleteAccountCancelBtn: $('#delete-account-cancel-btn'),
+
+        // PIN Lock Screen
+        pinLockscreenOverlay: $('#pin-lockscreen-overlay'),
+        pinLockAvatar: $('#pin-lock-avatar'),
+        pinDots: $$('#pin-dots .pin-dot'),
+        pinKeypad: $$('.pin-key'),
+        pinKeyClear: $('#pin-key-clear'),
+        pinKeyBack: $('#pin-key-back'),
+        pinSwitchAccountBtn: $('#pin-switch-account-btn'),
+
         // Main & Notifications
         mainEl: $('#main'),
         navNotifyBtn: $('#nav-notify-btn'),
+        themeToggleBtn: $('#theme-toggle-btn'),
 
         // Toast
         toastContainer: $('#toast-container'),
@@ -158,14 +225,43 @@
     auth.onAuthStateChanged((user) => {
         // Hide loading screen
         setTimeout(() => {
-            DOM.loadingScreen.classList.add('hidden');
+            if (DOM.loadingScreen) DOM.loadingScreen.classList.add('hidden');
         }, 600);
 
         if (user) {
+            // Check email verification for password users
+            const isGoogleProvider = user.providerData.some(p => p.providerId === 'google.com');
+            if (!isGoogleProvider && !user.emailVerified) {
+                currentUser = null;
+                showAuth();
+                stopApp();
+                DOM.loginError.innerHTML = 'Email not verified. Please check your inbox or <a href="#" id="resend-verification-link" style="color: var(--accent-secondary); text-decoration: underline;">Resend verification link</a>.';
+                
+                setTimeout(() => {
+                    const resendBtn = document.getElementById('resend-verification-link');
+                    if (resendBtn) {
+                        resendBtn.onclick = async (e) => {
+                            e.preventDefault();
+                            try {
+                                await user.sendEmailVerification();
+                                showToast('Verification email sent! ✉️', 'success');
+                            } catch (err) {
+                                console.error(err);
+                                showToast('Failed to send verification email.', 'error');
+                            }
+                        };
+                    }
+                }, 150);
+                
+                auth.signOut();
+                return;
+            }
+
             currentUser = user;
             showApp();
             subscribeToData();
             loadBgSetting();
+            loadThemeSetting();
             initApp();
         } else {
             currentUser = null;
@@ -185,12 +281,31 @@
         updateUserProfile();
     }
 
-    function updateUserProfile() {
+    async function updateUserProfile() {
         if (!currentUser) return;
 
         const name = currentUser.displayName || currentUser.email.split('@')[0];
         const email = currentUser.email;
-        const photoURL = currentUser.photoURL;
+        let photoURL = currentUser.photoURL;
+
+        try {
+            const profileDoc = await db.collection('users').doc(currentUser.uid)
+                .collection('settings').doc('profile').get();
+            if (profileDoc.exists && profileDoc.data().photoURL) {
+                photoURL = profileDoc.data().photoURL;
+            }
+        } catch (e) {
+            console.warn('Could not load profile photo from Firestore:', e);
+        }
+
+        // LocalStorage fallback if Firestore did not yield a valid Base64 image
+        if (!photoURL || photoURL === 'custom') {
+            const localPic = localStorage.getItem(`noteflow_${currentUser.uid}_profile_pic`);
+            if (localPic) {
+                photoURL = localPic;
+            }
+        }
+
         const initial = name.charAt(0).toUpperCase();
 
         // Navbar avatar
@@ -291,10 +406,14 @@
             const cred = await auth.createUserWithEmailAndPassword(email, password);
             // Update display name
             await cred.user.updateProfile({ displayName: name });
-            // Reload to get updated profile
-            await cred.user.reload();
-            currentUser = auth.currentUser;
-            showToast(`Welcome to NoteFlow, ${name}! 🎉`, 'success');
+            // Send email verification
+            await cred.user.sendEmailVerification();
+            // Sign out until they verify
+            await auth.signOut();
+            
+            showToast('Account created! A verification email has been sent. Please check your inbox! ✉️', 'success');
+            switchAuthTab('login');
+            DOM.loginError.innerHTML = 'Verification email sent. Please verify your email before logging in.';
         } catch (error) {
             DOM.signupError.textContent = getAuthErrorMessage(error.code);
         } finally {
@@ -318,20 +437,35 @@
         setButtonLoading(DOM.loginSubmitBtn, true);
 
         try {
-            await auth.signInWithEmailAndPassword(email, password);
+            const cred = await auth.signInWithEmailAndPassword(email, password);
+            if (!cred.user.emailVerified) {
+                // Trigger authStateChanged logic by leaving user unverified.
+                // The observer will log them out and show resend link.
+                setButtonLoading(DOM.loginSubmitBtn, false);
+                return;
+            }
             showToast('Welcome back! 👋', 'success');
         } catch (error) {
             DOM.loginError.textContent = getAuthErrorMessage(error.code);
-        } finally {
             setButtonLoading(DOM.loginSubmitBtn, false);
         }
     }
 
     // --- Google Sign-In ---
+    let pendingGoogleUser = null;
+
     async function handleGoogleSignIn() {
+        DOM.loginError.textContent = '';
+        DOM.signupError.textContent = '';
         try {
-            await auth.signInWithPopup(googleProvider);
-            showToast('Signed in with Google! 🚀', 'success');
+            const result = await auth.signInWithPopup(googleProvider);
+            const isNewUser = result.additionalUserInfo.isNewUser;
+            if (isNewUser) {
+                pendingGoogleUser = result.user;
+                DOM.googlePasswordModalOverlay.classList.add('open');
+            } else {
+                showToast('Signed in with Google! 🚀', 'success');
+            }
         } catch (error) {
             if (error.code !== 'auth/popup-closed-by-user') {
                 showToast(getAuthErrorMessage(error.code), 'error');
@@ -388,6 +522,7 @@
         // Unsubscribe existing listeners
         if (unsubNotes) unsubNotes();
         if (unsubGoals) unsubGoals();
+        if (unsubDailyTasks) unsubDailyTasks();
 
         // Real-time listener for Notes
         unsubNotes = getUserCollection('notes')
@@ -413,11 +548,24 @@
                 console.error('Goals listener error:', error);
                 showToast('Failed to load goals', 'error');
             });
+
+        // Real-time listener for Daily Tasks
+        unsubDailyTasks = getUserCollection('dailyTasks')
+            .orderBy('createdAt', 'desc')
+            .onSnapshot((snapshot) => {
+                dailyTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderDailyTasks();
+                renderHome();
+            }, (error) => {
+                console.error('Daily tasks listener error:', error);
+                showToast('Failed to load daily tasks', 'error');
+            });
     }
 
     function unsubscribeFromData() {
         if (unsubNotes) { unsubNotes(); unsubNotes = null; }
         if (unsubGoals) { unsubGoals(); unsubGoals = null; }
+        if (unsubDailyTasks) { unsubDailyTasks(); unsubDailyTasks = null; }
     }
 
     // ============================================================
@@ -493,6 +641,38 @@
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    function resizeProfileImage(file, callback) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const max_size = 128;
+                let width = img.width;
+                let height = img.height;
+                if (width > height) {
+                    if (width > max_size) {
+                        height *= max_size / width;
+                        width = max_size;
+                    }
+                } else {
+                    if (height > max_size) {
+                        width *= max_size / height;
+                        height = max_size;
+                    }
+                }
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                callback(dataUrl);
+            };
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
     }
 
     function formatDate(dateStr) {
@@ -600,6 +780,7 @@
         if (page === 'home') renderHome();
         else if (page === 'notes') renderNotes();
         else if (page === 'goals') renderGoals();
+        else if (page === 'daily-tasks') renderDailyTasks();
 
         closeSidebar();
     }
@@ -687,36 +868,11 @@
     function renderHome() {
         updateGreeting();
 
-        DOM.statNotes.textContent = notes.length;
+        if (DOM.statNotes) DOM.statNotes.textContent = notes.length;
         const activeGoals = goals.filter(g => !g.completed);
         const completedGoals = goals.filter(g => g.completed);
-        DOM.statActive.textContent = activeGoals.length;
-        DOM.statCompleted.textContent = completedGoals.length;
-
-        // Upcoming deadlines
-        const sorted = [...activeGoals].sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
-        const upcoming = sorted.slice(0, 5);
-
-        DOM.upcomingList.querySelectorAll('.upcoming-card').forEach(el => el.remove());
-        if (upcoming.length === 0) {
-            DOM.upcomingEmpty.style.display = 'block';
-        } else {
-            DOM.upcomingEmpty.style.display = 'none';
-            let html = '';
-            upcoming.forEach((goal, i) => {
-                const cd = getCountdown(goal.deadline);
-                html += `
-                    <div class="upcoming-card" style="animation-delay: ${i * 0.08}s">
-                        <div class="upcoming-info">
-                            <div class="upcoming-title">${escapeHtml(goal.title)}</div>
-                            <div class="upcoming-date">${formatDeadline(goal.deadline)}</div>
-                        </div>
-                        <div class="upcoming-timer ${cd.status}" data-timer-upcoming="${goal.id}">${cd.text}</div>
-                    </div>
-                `;
-            });
-            DOM.upcomingList.insertAdjacentHTML('afterbegin', html);
-        }
+        if (DOM.statActive) DOM.statActive.textContent = activeGoals.length;
+        if (DOM.statCompleted) DOM.statCompleted.textContent = completedGoals.length;
 
         // Recent notes
         const recentNotes = [...notes].sort((a, b) => {
@@ -741,11 +897,70 @@
             });
             DOM.recentNotesList.insertAdjacentHTML('afterbegin', html);
         }
+
+        // Daily tasks summary widget on Home
+        DOM.homeTasksList.querySelectorAll('.home-task-item').forEach(el => el.remove());
+        if (dailyTasks.length === 0) {
+            DOM.homeTasksEmpty.style.display = 'block';
+        } else {
+            DOM.homeTasksEmpty.style.display = 'none';
+            let html = '';
+            dailyTasks.forEach((task) => {
+                const today = getTodayStr();
+                const isCompleted = task.completed && task.lastCompletedDate === today;
+                
+                html += `
+                    <div class="home-task-item ${isCompleted ? 'completed' : ''}">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${isCompleted ? 'var(--success)' : 'var(--text-tertiary)'}" stroke-width="2.5">
+                            ${isCompleted ? '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>' : '<circle cx="12" cy="12" r="10"/>'}
+                        </svg>
+                        <span class="home-task-text">${escapeHtml(task.text)}</span>
+                    </div>
+                `;
+            });
+            DOM.homeTasksList.insertAdjacentHTML('afterbegin', html);
+        }
     }
 
     // ============================================================
     // RENDER NOTES
     // ============================================================
+    function renderSingleNoteCard(note, gi, ni) {
+        const timeStr = new Date(note.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        const tag = note.tag || 'General';
+        const tagClass = `tag-${tag.toLowerCase()}`;
+        const noteColor = note.color || '';
+        const colorClass = noteColor ? 'has-color' : '';
+        const colorStyle = noteColor ? `style="--note-accent-color: ${noteColor}; animation-delay: ${(gi * 0.1) + (ni * 0.05)}s"` : `style="animation-delay: ${(gi * 0.1) + (ni * 0.05)}s"`;
+        const isPinned = note.pinned || false;
+
+        return `
+            <div class="note-card ${colorClass}" ${colorStyle} data-note-id="${note.id}">
+                <div class="note-card-header">
+                    <div class="note-card-title">
+                        <span>${escapeHtml(note.title)}</span>
+                        <span class="tag-badge ${tagClass}">${escapeHtml(tag)}</span>
+                    </div>
+                    <div class="note-card-actions">
+                        <button class="btn-icon ${isPinned ? 'active' : ''}" onclick="window.NoteFlow.togglePinNote('${note.id}')" aria-label="${isPinned ? 'Unpin note' : 'Pin note'}" title="${isPinned ? 'Unpin note' : 'Pin note'}">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="${isPinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-.44-1.24l-2.78-3.48A2 2 0 0 1 15 9.28V5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v4.28a2 2 0 0 1-.78 1.24l-2.78 3.48A2 2 0 0 0 5 15.24z"/></svg>
+                        </button>
+                        <button class="btn-icon" onclick="window.NoteFlow.editNote('${note.id}')" aria-label="Edit note" title="Edit note">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                        </button>
+                        <button class="btn-icon btn-icon-danger" onclick="window.NoteFlow.deleteNote('${note.id}')" aria-label="Delete note" title="Delete note">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        </button>
+                    </div>
+                </div>
+                ${note.content ? `<div class="note-card-content">${parseMarkdown(note.content)}</div>` : ''}
+                <div class="note-card-footer">
+                    <span class="note-card-time">Added at ${timeStr}</span>
+                </div>
+            </div>
+        `;
+    }
+
     function renderNotes() {
         const filteredNotes = notes.filter(note => {
             const tag = note.tag || 'General';
@@ -774,62 +989,56 @@
             return;
         }
 
-        const grouped = {};
-        filteredNotes.forEach(note => {
-            if (!grouped[note.date]) grouped[note.date] = [];
-            grouped[note.date].push(note);
-        });
-
-        const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
-        sortedDates.forEach(date => grouped[date].sort((a, b) => b.createdAt - a.createdAt));
+        const pinned = filteredNotes.filter(n => n.pinned);
+        const unpinned = filteredNotes.filter(n => !n.pinned);
 
         let html = '';
-        sortedDates.forEach((date, gi) => {
-            const label = formatDate(date);
-            const count = grouped[date].length;
 
-            html += `<div class="date-group" style="animation-delay: ${gi * 0.1}s">
-                <div class="date-group-header">
-                    <span class="date-group-label">${escapeHtml(label)}</span>
-                    <div class="date-group-line"></div>
-                    <span class="date-group-count">${count} note${count > 1 ? 's' : ''}</span>
-                </div>
-                <div class="notes-list">`;
-
-            grouped[date].forEach((note, ni) => {
-                const timeStr = new Date(note.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-                const tag = note.tag || 'General';
-                const tagClass = `tag-${tag.toLowerCase()}`;
-                const noteColor = note.color || '';
-                const colorClass = noteColor ? 'has-color' : '';
-                const colorStyle = noteColor ? `style="--note-accent-color: ${noteColor}; animation-delay: ${(gi * 0.1) + (ni * 0.05)}s"` : `style="animation-delay: ${(gi * 0.1) + (ni * 0.05)}s"`;
-
-                html += `
-                    <div class="note-card ${colorClass}" ${colorStyle} data-note-id="${note.id}">
-                        <div class="note-card-header">
-                            <div class="note-card-title">
-                                <span>${escapeHtml(note.title)}</span>
-                                <span class="tag-badge ${tagClass}">${escapeHtml(tag)}</span>
-                            </div>
-                            <div class="note-card-actions">
-                                <button class="btn-icon" onclick="window.NoteFlow.editNote('${note.id}')" aria-label="Edit note" title="Edit note">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                                </button>
-                                <button class="btn-icon btn-icon-danger" onclick="window.NoteFlow.deleteNote('${note.id}')" aria-label="Delete note" title="Delete note">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                                </button>
-                            </div>
-                        </div>
-                        ${note.content ? `<div class="note-card-content">${parseMarkdown(note.content)}</div>` : ''}
-                        <div class="note-card-footer">
-                            <span class="note-card-time">Added at ${timeStr}</span>
-                        </div>
+        // Render Pinned Notes first
+        if (pinned.length > 0) {
+            html += `
+                <div class="pinned-section" style="width: 100%;">
+                    <div class="pinned-section-header">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-.44-1.24l-2.78-3.48A2 2 0 0 1 15 9.28V5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v4.28a2 2 0 0 1-.78 1.24l-2.78 3.48A2 2 0 0 0 5 15.24z"/></svg>
+                        <span>Pinned Notes (${pinned.length})</span>
                     </div>
-                `;
+                    <div class="notes-list" style="margin-bottom: 28px;">
+            `;
+            pinned.forEach((note, ni) => {
+                html += renderSingleNoteCard(note, 0, ni);
+            });
+            html += `</div></div>`;
+        }
+
+        if (unpinned.length > 0) {
+            const grouped = {};
+            unpinned.forEach(note => {
+                if (!grouped[note.date]) grouped[note.date] = [];
+                grouped[note.date].push(note);
             });
 
-            html += `</div></div>`;
-        });
+            const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+            sortedDates.forEach(date => grouped[date].sort((a, b) => b.createdAt - a.createdAt));
+
+            sortedDates.forEach((date, gi) => {
+                const label = formatDate(date);
+                const count = grouped[date].length;
+
+                html += `<div class="date-group" style="animation-delay: ${gi * 0.1}s; width: 100%;">
+                    <div class="date-group-header">
+                        <span class="date-group-label">${escapeHtml(label)}</span>
+                        <div class="date-group-line"></div>
+                        <span class="date-group-count">${count} note${count > 1 ? 's' : ''}</span>
+                    </div>
+                    <div class="notes-list">`;
+
+                grouped[date].forEach((note, ni) => {
+                    html += renderSingleNoteCard(note, gi, ni);
+                });
+
+                html += `</div></div>`;
+            });
+        }
 
         DOM.notesContainer.innerHTML = html;
     }
@@ -851,25 +1060,33 @@
             return;
         }
 
-        const active = goals.filter(g => !g.completed).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
+        const pinnedActive = goals.filter(g => g.pinned && !g.completed);
+        const unpinnedActive = goals.filter(g => !g.pinned && !g.completed).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
         const completed = goals.filter(g => g.completed).sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
-        const sorted = [...active, ...completed];
+        const sorted = [...pinnedActive, ...unpinnedActive, ...completed];
 
         let html = '';
         sorted.forEach((goal, i) => {
             const cd = goal.completed ? { text: 'Completed', status: 'completed' } : getCountdown(goal.deadline);
+            const isPinned = goal.pinned && !goal.completed;
 
             html += `
-                <div class="goal-card ${goal.completed ? 'completed' : ''}" style="animation-delay: ${i * 0.06}s" data-goal-id="${goal.id}">
+                <div class="goal-card ${goal.completed ? 'completed' : ''} ${isPinned ? 'pinned' : ''}" style="animation-delay: ${i * 0.06}s" data-goal-id="${goal.id}">
                     <div class="goal-status-dot ${cd.status}" data-dot-goal="${goal.id}"></div>
                     <div class="goal-info">
-                        <div class="goal-title">${escapeHtml(goal.title)}</div>
+                        <div class="goal-title">
+                            ${isPinned ? '<span style="color: var(--warning); font-size: 0.85rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 2px;">⭐ Daily Focus Goal</span>' : ''}
+                            ${escapeHtml(goal.title)}
+                        </div>
                         ${goal.description ? `<div class="goal-desc">${escapeHtml(goal.description)}</div>` : ''}
                         <div class="goal-deadline-text">${formatDeadline(goal.deadline)}</div>
                     </div>
                     <div class="goal-timer-badge ${cd.status}" data-timer-goal="${goal.id}">${cd.text}</div>
                     <div class="goal-actions">
                         ${!goal.completed ? `
+                            <button class="btn-icon btn-pin-goal ${goal.pinned ? 'active' : ''}" onclick="window.NoteFlow.togglePinGoal('${goal.id}')" aria-label="${goal.pinned ? 'Unfocus goal' : 'Focus goal'}" title="${goal.pinned ? 'Unfocus goal' : 'Set as focus goal'}">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="${goal.pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                            </button>
                             <button class="btn-complete" onclick="window.NoteFlow.completeGoal('${goal.id}')" aria-label="Complete goal" title="Mark as complete">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                             </button>
@@ -990,8 +1207,426 @@
         }
     }
 
+    async function togglePinNote(id) {
+        const note = notes.find(n => n.id === id);
+        if (!note) return;
+        try {
+            await getUserCollection('notes').doc(id).update({
+                pinned: !note.pinned
+            });
+        } catch (e) {
+            console.error('Error toggling pin:', e);
+            showToast('Failed to pin note', 'error');
+        }
+    }
+
+    async function togglePinGoal(id) {
+        const goal = goals.find(g => g.id === id);
+        if (!goal) return;
+        
+        const isCurrentlyPinned = goal.pinned || false;
+        
+        try {
+            if (!isCurrentlyPinned) {
+                // We are pinning this goal. Unpin all other goals first to maintain "Max 1"!
+                const batch = db.batch();
+                const pinnedGoals = goals.filter(g => g.pinned && g.id !== id);
+                
+                pinnedGoals.forEach(pg => {
+                    const ref = getUserCollection('goals').doc(pg.id);
+                    batch.update(ref, { pinned: false });
+                });
+                
+                const selfRef = getUserCollection('goals').doc(id);
+                batch.update(selfRef, { pinned: true });
+                
+                await batch.commit();
+                showToast('Focus goal set! ⭐', 'success');
+            } else {
+                // Just unpin it
+                await getUserCollection('goals').doc(id).update({ pinned: false });
+                showToast('Focus goal removed', 'info');
+            }
+        } catch (e) {
+            console.error('Error toggling focus goal:', e);
+            showToast('Failed to set focus goal', 'error');
+        }
+    }
+
+    // ============================================================
+    // CRUD: DAILY TASKS (Firestore with daily reset logic)
+    // ============================================================
+    async function addDailyTask(text) {
+        try {
+            await getUserCollection('dailyTasks').add({
+                text,
+                completed: false,
+                lastCompletedDate: '',
+                createdAt: Date.now()
+            });
+            showToast('Daily task added!', 'success');
+        } catch (error) {
+            console.error('Error adding daily task:', error);
+            showToast('Failed to add daily task', 'error');
+        }
+    }
+
+    async function deleteDailyTask(id) {
+        const card = document.querySelector(`[data-task-id="${id}"]`);
+        if (card) card.style.animation = 'cardRemove 0.35s ease forwards';
+        try {
+            await getUserCollection('dailyTasks').doc(id).delete();
+            showToast('Daily task removed', 'info');
+        } catch (error) {
+            console.error('Error deleting task:', error);
+            showToast('Failed to delete task', 'error');
+        }
+    }
+
+    async function toggleDailyTask(id) {
+        const task = dailyTasks.find(t => t.id === id);
+        if (!task) return;
+
+        const today = getTodayStr();
+        const wasCompleted = task.completed && task.lastCompletedDate === today;
+        
+        try {
+            await getUserCollection('dailyTasks').doc(id).update({
+                completed: !wasCompleted,
+                lastCompletedDate: !wasCompleted ? today : ''
+            });
+        } catch (error) {
+            console.error('Error toggling task:', error);
+            showToast('Failed to update task', 'error');
+        }
+    }
+
+    function renderDailyTasks() {
+        if (dailyTasks.length === 0) {
+            DOM.tasksContainer.innerHTML = `
+                <div class="empty-state">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.35">
+                        <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                    </svg>
+                    <p>No daily tasks yet</p>
+                    <span>Add habits or recurring tasks to track your daily progress</span>
+                </div>
+            `;
+            DOM.taskProgressPct.textContent = '0%';
+            DOM.taskProgressBar.style.width = '0%';
+            return;
+        }
+
+        const today = getTodayStr();
+        let completedCount = 0;
+        let html = '';
+
+        // Sort: active first, completed second
+        const sortedTasks = [...dailyTasks].sort((a, b) => {
+            const aComp = a.completed && a.lastCompletedDate === today;
+            const bComp = b.completed && b.lastCompletedDate === today;
+            if (aComp === bComp) return b.createdAt - a.createdAt;
+            return aComp ? 1 : -1;
+        });
+
+        sortedTasks.forEach((task, i) => {
+            const isCompleted = task.completed && task.lastCompletedDate === today;
+            if (isCompleted) completedCount++;
+
+            html += `
+                <div class="task-card ${isCompleted ? 'completed' : ''}" style="animation-delay: ${i * 0.05}s" data-task-id="${task.id}">
+                    <div class="task-left">
+                        <button class="task-checkbox-btn" onclick="window.NoteFlow.toggleDailyTask('${task.id}')" aria-label="Toggle task">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                        </button>
+                        <span class="task-text">${escapeHtml(task.text)}</span>
+                    </div>
+                    <button class="btn-icon btn-icon-danger" onclick="window.NoteFlow.deleteDailyTask('${task.id}')" aria-label="Delete task" title="Delete task">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
+            `;
+        });
+
+        DOM.tasksContainer.innerHTML = html;
+
+        // Update progress bar
+        const pct = Math.round((completedCount / dailyTasks.length) * 100);
+        DOM.taskProgressPct.textContent = `${pct}%`;
+        DOM.taskProgressBar.style.width = `${pct}%`;
+    }
+
     // ===== EXPOSE PUBLIC API =====
-    window.NoteFlow = { deleteNote, editNote, deleteGoal, completeGoal };
+    window.NoteFlow = { 
+        deleteNote, 
+        editNote, 
+        deleteGoal, 
+        completeGoal, 
+        togglePinNote, 
+        togglePinGoal, 
+        toggleDailyTask, 
+        deleteDailyTask 
+    };
+
+    // ============================================================
+    // SECURITY & AUTH UPGRADES
+    // ============================================================
+
+    // --- 1. Forgot Password via Email ---
+    async function handleResetPassword(e) {
+        e.preventDefault();
+        const email = DOM.resetEmail.value.trim();
+        if (!email) return;
+        try {
+            await auth.sendPasswordResetEmail(email);
+            showToast('Password reset email sent! Please check your inbox ✉️', 'success');
+            DOM.resetPasswordModalOverlay.classList.remove('open');
+            DOM.resetPasswordForm.reset();
+        } catch (error) {
+            console.error('Password reset error:', error);
+            showToast(getAuthErrorMessage(error.code), 'error');
+        }
+    }
+
+    // --- 2. Change Password inside Profile ---
+    async function handleChangePassword(e) {
+        e.preventDefault();
+        if (!currentUser) return;
+
+        const oldPass = DOM.cpOldPassword.value;
+        const newPass = DOM.cpNewPassword.value;
+        const confirmPass = DOM.cpConfirmPassword.value;
+
+        if (newPass.length < 6) {
+            showToast('New password must be at least 6 characters.', 'error');
+            return;
+        }
+        if (newPass !== confirmPass) {
+            showToast('New passwords do not match.', 'error');
+            return;
+        }
+
+        try {
+            const cred = firebase.auth.EmailAuthProvider.credential(currentUser.email, oldPass);
+            await currentUser.reauthenticateWithCredential(cred);
+            await currentUser.updatePassword(newPass);
+            showToast('Password updated successfully! 🔒', 'success');
+            DOM.changePasswordModalOverlay.classList.remove('open');
+            DOM.changePasswordForm.reset();
+        } catch (error) {
+            console.error('Change password error:', error);
+            showToast('Failed to update password. Check your current password.', 'error');
+        }
+    }
+
+    // --- 3. 4-Digit Security PIN & Auto-Lock ---
+    let isPinEnabled = false;
+    let userPin = '';
+    let enteredPin = '';
+    let lastActivityTime = Date.now();
+    let inactivityInterval = null;
+
+    function updatePinDots() {
+        if (!DOM.pinDots) return;
+        DOM.pinDots.forEach((dot, index) => {
+            dot.classList.toggle('filled', index < enteredPin.length);
+            dot.classList.remove('error');
+        });
+    }
+
+    function showPinLockscreen() {
+        if (!isPinEnabled || !userPin) return;
+
+        const name = currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User';
+        const initial = name.charAt(0).toUpperCase();
+
+        let photoURL = currentUser?.photoURL;
+        if (!photoURL || photoURL === 'custom') {
+            const localPic = localStorage.getItem(`noteflow_${currentUser?.uid}_profile_pic`);
+            if (localPic) photoURL = localPic;
+        }
+
+        if (photoURL && photoURL !== 'custom') {
+            DOM.pinLockAvatar.innerHTML = `<img src="${photoURL}" alt="${name}">`;
+        } else {
+            DOM.pinLockAvatar.textContent = initial;
+        }
+
+        enteredPin = '';
+        updatePinDots();
+        DOM.pinLockscreenOverlay.style.display = 'flex';
+    }
+
+    function hidePinLockscreen() {
+        DOM.pinLockscreenOverlay.style.display = 'none';
+        enteredPin = '';
+        lastActivityTime = Date.now();
+    }
+
+    function handlePinKey(key) {
+        if (enteredPin.length < 4) {
+            enteredPin += key;
+            updatePinDots();
+            if (enteredPin.length === 4) {
+                verifyPin();
+            }
+        }
+    }
+
+    function verifyPin() {
+        if (enteredPin === userPin) {
+            hidePinLockscreen();
+            showToast('App Unlocked 🔓', 'success');
+        } else {
+            DOM.pinDots.forEach(dot => dot.classList.add('error'));
+            const card = document.querySelector('.pin-lockscreen-card');
+            if (card) {
+                card.classList.add('shake');
+                setTimeout(() => card.classList.remove('shake'), 400);
+            }
+            showToast('Incorrect PIN. Please try again.', 'error');
+            setTimeout(() => {
+                enteredPin = '';
+                updatePinDots();
+            }, 500);
+        }
+    }
+
+    function lockAppNow() {
+        if (!isPinEnabled || !userPin) {
+            showToast('Please set and enable a 4-digit PIN first.', 'error');
+            if (DOM.pinEnableToggle) DOM.pinEnableToggle.checked = true;
+            if (DOM.pinSettingsModalOverlay) DOM.pinSettingsModalOverlay.classList.add('open');
+            return;
+        }
+        showPinLockscreen();
+        showToast('App Locked 🔒', 'info');
+    }
+
+    async function savePinSettings(e) {
+        e.preventDefault();
+        if (!currentUser) return;
+
+        const enabled = DOM.pinEnableToggle.checked;
+        const newPin = DOM.pinNew.value.trim();
+        const confirmPin = DOM.pinConfirm.value.trim();
+
+        if (enabled) {
+            if (newPin) {
+                if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) {
+                    showToast('PIN must be exactly 4 digits.', 'error');
+                    return;
+                }
+                if (newPin !== confirmPin) {
+                    showToast('PINs do not match.', 'error');
+                    return;
+                }
+                userPin = newPin;
+            } else if (!userPin) {
+                showToast('Please enter a 4-digit numeric PIN.', 'error');
+                return;
+            }
+        }
+
+        isPinEnabled = enabled;
+
+        try {
+            const pinData = { enabled: isPinEnabled, pin: userPin };
+            localStorage.setItem(`noteflow_${currentUser.uid}_pin`, JSON.stringify(pinData));
+            await db.collection('users').doc(currentUser.uid)
+                .collection('settings').doc('pin').set(pinData);
+            showToast(isPinEnabled ? 'Security PIN Lock enabled! 🔒' : 'PIN Lock disabled.', 'success');
+            DOM.pinSettingsModalOverlay.classList.remove('open');
+            DOM.pinSettingsForm.reset();
+        } catch (error) {
+            console.error('Save PIN error:', error);
+            showToast('Failed to save PIN settings.', 'error');
+        }
+    }
+
+    async function loadPinSettings() {
+        if (!currentUser) return;
+        try {
+            const local = localStorage.getItem(`noteflow_${currentUser.uid}_pin`);
+            if (local) {
+                const data = JSON.parse(local);
+                isPinEnabled = data.enabled || false;
+                userPin = data.pin || '';
+            }
+            const doc = await db.collection('users').doc(currentUser.uid)
+                .collection('settings').doc('pin').get();
+            if (doc.exists) {
+                const data = doc.data();
+                isPinEnabled = data.enabled || false;
+                userPin = data.pin || '';
+            }
+            if (isPinEnabled && userPin) {
+                showPinLockscreen();
+            }
+        } catch (e) {
+            console.warn('Could not load PIN settings:', e);
+        }
+    }
+
+    function initInactivityMonitor() {
+        const resetTimer = () => { lastActivityTime = Date.now(); };
+        ['mousemove', 'keydown', 'touchstart', 'click'].forEach(evt => {
+            window.addEventListener(evt, resetTimer, { passive: true });
+        });
+
+        if (inactivityInterval) clearInterval(inactivityInterval);
+        inactivityInterval = setInterval(() => {
+            if (currentUser && isPinEnabled && userPin && DOM.pinLockscreenOverlay.style.display === 'none') {
+                // 10 minutes = 600,000 ms
+                if (Date.now() - lastActivityTime > 10 * 60 * 1000) {
+                    showPinLockscreen();
+                }
+            }
+        }, 10000);
+    }
+
+    // --- 4. Delete Account & Wipe Data ---
+    async function handleDeleteAccount(e) {
+        e.preventDefault();
+        if (!currentUser) return;
+
+        const confirmText = DOM.deleteConfirmText.value.trim();
+        const password = DOM.deletePassword.value;
+
+        if (confirmText !== 'DELETE') {
+            showToast('Please type DELETE to confirm.', 'error');
+            return;
+        }
+
+        try {
+            const cred = firebase.auth.EmailAuthProvider.credential(currentUser.email, password);
+            await currentUser.reauthenticateWithCredential(cred);
+
+            showToast('Wiping cloud data...', 'info');
+
+            const collections = ['notes', 'goals', 'dailyTasks', 'settings'];
+            for (const colName of collections) {
+                const snap = await getUserCollection(colName).get();
+                const batch = db.batch();
+                snap.docs.forEach(doc => batch.delete(doc.ref));
+                await batch.commit();
+            }
+
+            await db.collection('users').doc(currentUser.uid).delete();
+            localStorage.clear();
+
+            const userToDelete = currentUser;
+            stopApp();
+            await userToDelete.delete();
+
+            showToast('Account and all data permanently deleted.', 'info');
+            DOM.deleteAccountModalOverlay.classList.remove('open');
+            DOM.deleteAccountForm.reset();
+        } catch (error) {
+            console.error('Delete account error:', error);
+            showToast('Failed to delete account. Check your password.', 'error');
+        }
+    }
 
     // ============================================================
     // APP INIT & EVENT LISTENERS
@@ -1132,6 +1767,100 @@
         // Notification Button
         DOM.navNotifyBtn.addEventListener('click', requestNotificationPermission);
 
+        // Theme Toggle Button
+        if (DOM.themeToggleBtn) {
+            DOM.themeToggleBtn.addEventListener('click', toggleTheme);
+        }
+
+        // Google Password Modal Submit
+        DOM.googlePasswordForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!pendingGoogleUser) return;
+            const password = DOM.googleSetPassword.value;
+            const confirm = DOM.googleConfirmPassword.value;
+
+            if (password.length < 6) {
+                showToast('Password must be at least 6 characters.', 'error');
+                return;
+            }
+            if (password !== confirm) {
+                showToast('Passwords do not match.', 'error');
+                return;
+            }
+
+            try {
+                const credential = firebase.auth.EmailAuthProvider.credential(pendingGoogleUser.email, password);
+                await pendingGoogleUser.linkWithCredential(credential);
+                showToast('Password set successfully! 🔒 You can now log in using Google or email/password.', 'success');
+                DOM.googlePasswordModalOverlay.classList.remove('open');
+                DOM.googlePasswordForm.reset();
+                pendingGoogleUser = null;
+            } catch (err) {
+                console.error(err);
+                showToast(`Failed to set password: ${err.message}`, 'error');
+            }
+        });
+
+        // Google Password Modal Skip
+        DOM.googlePasswordSkipBtn.addEventListener('click', () => {
+            DOM.googlePasswordModalOverlay.classList.remove('open');
+            DOM.googlePasswordForm.reset();
+            pendingGoogleUser = null;
+            showToast('Password set skipped. You can set it later if needed.', 'info');
+        });
+
+        // Change Profile Picture click
+        DOM.changeProfilePicBtn.addEventListener('click', () => {
+            DOM.userDropdown.classList.remove('open');
+            DOM.profilePicInput.click();
+        });
+
+        // Profile Picture select
+        DOM.profilePicInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                if (!file.type.startsWith('image/')) {
+                    showToast('Please select an image file', 'error');
+                    return;
+                }
+                if (file.size > 2 * 1024 * 1024) {
+                    showToast('Profile picture must be smaller than 2MB', 'error');
+                    return;
+                }
+                
+                resizeProfileImage(file, async (dataUrl) => {
+                    try {
+                        // Save in localStorage immediately so it works on this device
+                        // even if Firestore is unreachable/unconfigured
+                        localStorage.setItem(`noteflow_${currentUser.uid}_profile_pic`, dataUrl);
+                        
+                        // Try to store the Base64 image in Firestore for cross-device sync
+                        try {
+                            await db.collection('users').doc(currentUser.uid)
+                                .collection('settings').doc('profile')
+                                .set({ photoURL: dataUrl });
+                        } catch (firestoreErr) {
+                            console.warn('Firestore profile sync failed, relying on localStorage:', firestoreErr);
+                        }
+                        
+                        try {
+                            // Save a placeholder to Auth profile so we know a custom photo exists
+                            await currentUser.updateProfile({ photoURL: 'custom' });
+                        } catch (authErr) {
+                            console.warn('Auth profile photoURL update failed:', authErr);
+                        }
+                        
+                        updateUserProfile();
+                        showToast('Profile picture updated! 👤', 'success');
+                    } catch (err) {
+                        console.error(err);
+                        showToast('Failed to update profile picture.', 'error');
+                    }
+                });
+            }
+            e.target.value = ''; // Reset
+        });
+
         // Color Swatch Pickers
         initColorSwatchListeners(DOM.noteColorPicker);
         initColorSwatchListeners(DOM.editNoteColorPicker);
@@ -1149,6 +1878,15 @@
             }
             addGoal(title, description, deadline);
             DOM.goalForm.reset();
+        });
+
+        // Task form
+        DOM.taskForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = DOM.taskText.value.trim();
+            if (!text) return;
+            addDailyTask(text);
+            DOM.taskForm.reset();
         });
 
         // Background settings
@@ -1205,8 +1943,89 @@
                 closeBgModal();
                 closeEditNoteModal();
                 DOM.userDropdown.classList.remove('open');
+                if (DOM.resetPasswordModalOverlay) DOM.resetPasswordModalOverlay.classList.remove('open');
+                if (DOM.changePasswordModalOverlay) DOM.changePasswordModalOverlay.classList.remove('open');
+                if (DOM.pinSettingsModalOverlay) DOM.pinSettingsModalOverlay.classList.remove('open');
+                if (DOM.deleteAccountModalOverlay) DOM.deleteAccountModalOverlay.classList.remove('open');
             }
         });
+
+        // --- Security Event Listeners ---
+        if (DOM.forgotPasswordLink) {
+            DOM.forgotPasswordLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                DOM.resetPasswordModalOverlay.classList.add('open');
+            });
+        }
+        if (DOM.resetPasswordForm) DOM.resetPasswordForm.addEventListener('submit', handleResetPassword);
+        if (DOM.resetPasswordModalClose) DOM.resetPasswordModalClose.addEventListener('click', () => DOM.resetPasswordModalOverlay.classList.remove('open'));
+        if (DOM.resetPasswordCancelBtn) DOM.resetPasswordCancelBtn.addEventListener('click', () => DOM.resetPasswordModalOverlay.classList.remove('open'));
+
+        if (DOM.changePasswordBtn) {
+            DOM.changePasswordBtn.addEventListener('click', () => {
+                DOM.userDropdown.classList.remove('open');
+                DOM.changePasswordModalOverlay.classList.add('open');
+            });
+        }
+        if (DOM.changePasswordForm) DOM.changePasswordForm.addEventListener('submit', handleChangePassword);
+        if (DOM.changePasswordModalClose) DOM.changePasswordModalClose.addEventListener('click', () => DOM.changePasswordModalOverlay.classList.remove('open'));
+        if (DOM.changePasswordCancelBtn) DOM.changePasswordCancelBtn.addEventListener('click', () => DOM.changePasswordModalOverlay.classList.remove('open'));
+
+        if (DOM.pinLockSettingsBtn) {
+            DOM.pinLockSettingsBtn.addEventListener('click', () => {
+                DOM.userDropdown.classList.remove('open');
+                DOM.pinEnableToggle.checked = isPinEnabled;
+                DOM.pinSettingsModalOverlay.classList.add('open');
+            });
+        }
+        if (DOM.lockAppNowBtn) {
+            DOM.lockAppNowBtn.addEventListener('click', () => {
+                DOM.userDropdown.classList.remove('open');
+                lockAppNow();
+            });
+        }
+        if (DOM.pinSettingsForm) DOM.pinSettingsForm.addEventListener('submit', savePinSettings);
+        if (DOM.pinSettingsModalClose) DOM.pinSettingsModalClose.addEventListener('click', () => DOM.pinSettingsModalOverlay.classList.remove('open'));
+        if (DOM.pinSettingsCancelBtn) DOM.pinSettingsCancelBtn.addEventListener('click', () => DOM.pinSettingsModalOverlay.classList.remove('open'));
+
+        if (DOM.pinKeypad) {
+            DOM.pinKeypad.forEach(keyBtn => {
+                keyBtn.addEventListener('click', () => {
+                    const key = keyBtn.dataset.key;
+                    if (key !== undefined) handlePinKey(key);
+                });
+            });
+        }
+        if (DOM.pinKeyClear) DOM.pinKeyClear.addEventListener('click', () => { enteredPin = ''; updatePinDots(); });
+        if (DOM.pinKeyBack) DOM.pinKeyBack.addEventListener('click', () => { if (enteredPin.length > 0) { enteredPin = enteredPin.slice(0, -1); updatePinDots(); } });
+        if (DOM.pinSwitchAccountBtn) DOM.pinSwitchAccountBtn.addEventListener('click', () => { hidePinLockscreen(); handleSignOut(); });
+
+        // Physical Keyboard listener for PIN lock screen
+        window.addEventListener('keydown', (e) => {
+            if (DOM.pinLockscreenOverlay && DOM.pinLockscreenOverlay.style.display === 'flex') {
+                if (/^[0-9]$/.test(e.key)) {
+                    handlePinKey(e.key);
+                } else if (e.key === 'Backspace') {
+                    if (enteredPin.length > 0) {
+                        enteredPin = enteredPin.slice(0, -1);
+                        updatePinDots();
+                    }
+                } else if (e.key === 'Escape' || e.key === 'c' || e.key === 'C') {
+                    enteredPin = '';
+                    updatePinDots();
+                }
+            }
+        });
+
+        if (DOM.deleteAccountBtn) {
+            DOM.deleteAccountBtn.addEventListener('click', () => {
+                DOM.userDropdown.classList.remove('open');
+                DOM.deleteAccountModalOverlay.classList.add('open');
+            });
+        }
+        if (DOM.deleteAccountForm) DOM.deleteAccountForm.addEventListener('submit', handleDeleteAccount);
+        if (DOM.deleteAccountModalClose) DOM.deleteAccountModalClose.addEventListener('click', () => DOM.deleteAccountModalOverlay.classList.remove('open'));
+        if (DOM.deleteAccountCancelBtn) DOM.deleteAccountCancelBtn.addEventListener('click', () => DOM.deleteAccountModalOverlay.classList.remove('open'));
     }
 
     // ============================================================
@@ -1409,6 +2228,66 @@
         }
     }
 
+    // ============================================================
+    // THEME MANAGEMENT (Light / Dark)
+    // ============================================================
+    let currentTheme = 'dark';
+
+    function applyTheme(theme) {
+        currentTheme = theme;
+        const isLight = theme === 'light';
+        document.documentElement.classList.toggle('light-theme', isLight);
+        document.body.classList.toggle('light-theme', isLight);
+        
+        if (DOM.themeToggleBtn) {
+            const sunIcon = DOM.themeToggleBtn.querySelector('.sun-icon');
+            const moonIcon = DOM.themeToggleBtn.querySelector('.moon-icon');
+            if (sunIcon && moonIcon) {
+                sunIcon.style.display = isLight ? 'block' : 'none';
+                moonIcon.style.display = isLight ? 'none' : 'block';
+            }
+        }
+    }
+
+    async function toggleTheme() {
+        const nextTheme = currentTheme === 'light' ? 'dark' : 'light';
+        applyTheme(nextTheme);
+        saveThemeSetting(nextTheme);
+        showToast(`Switched to ${nextTheme === 'light' ? 'Light' : 'Dark'} theme`, 'info');
+    }
+
+    async function saveThemeSetting(theme) {
+        localStorage.setItem('noteflow_theme', theme);
+        if (currentUser) {
+            try {
+                await db.collection('users').doc(currentUser.uid)
+                    .collection('settings').doc('theme').set({ theme });
+            } catch (e) {
+                console.warn('Could not save theme to Firestore:', e);
+            }
+        }
+    }
+
+    async function loadThemeSetting() {
+        const localTheme = localStorage.getItem('noteflow_theme');
+        if (localTheme) {
+            applyTheme(localTheme);
+        }
+
+        if (!currentUser) return;
+
+        try {
+            const doc = await db.collection('users').doc(currentUser.uid)
+                .collection('settings').doc('theme').get();
+            if (doc.exists && doc.data().theme) {
+                applyTheme(doc.data().theme);
+                localStorage.setItem('noteflow_theme', doc.data().theme);
+            }
+        } catch (e) {
+            console.warn('Could not load theme from Firestore:', e);
+        }
+    }
+
     function updatePresetActiveState(activeBtn) {
         DOM.bgPresetsGrid.querySelectorAll('.bg-preset').forEach(b => b.classList.remove('active'));
         activeBtn.classList.add('active');
@@ -1440,8 +2319,10 @@
 
     // ===== BOOT =====
     function boot() {
+        loadThemeSetting();
         initEvents();
-        console.log('%c✨ NoteFlow Loaded (with Firebase Auth)', 'color: #8B5CF6; font-weight: bold; font-size: 14px;');
+        initInactivityMonitor();
+        console.log('%c✨ NoteFlow Loaded (with Firebase Auth & Security)', 'color: #8B5CF6; font-weight: bold; font-size: 14px;');
     }
 
     if (document.readyState === 'loading') {
